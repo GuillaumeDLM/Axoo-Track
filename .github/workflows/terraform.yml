@@ -1,0 +1,32 @@
+name: 'CI axoo-track - Validation Terraform'
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+jobs:
+  validate-terraform:
+    name: 'Vérification du code Infrastructure'
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. GitHub récupère ton code source
+    - name: Checkout du code
+      uses: actions/checkout@v4
+
+    # 2. Installation de Terraform sur le serveur GitHub
+    - name: Installation de Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    # 3. Initialisation (sans se connecter à un Cloud distant)
+    - name: Terraform Init
+      run: terraform init -backend=false
+
+    # 4. Vérification du formatage du code
+    - name: Terraform Format
+      run: terraform fmt -check
+
+    # 5. ÉTAPE CRUCIALE : Validation de la logique de ton code
+    - name: Terraform Validate
+      run: terraform validate
