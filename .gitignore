@@ -1,5 +1,11 @@
 node_modules
-# Keep environment variables out of version control
+dist
 .env
 
 /src/generated/prisma
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform.lock.hcl

@@ -1,4 +1,4 @@
-name: 'CI axoo-track - Validation Terraform'
+name: 'CI/CD axoo-track - Terraform'
 
 on:
   push:
@@ -6,27 +6,40 @@ on:
   pull_request:
 
 jobs:
-  validate-terraform:
-    name: 'Vérification du code Infrastructure'
-    runs-on: ubuntu-latest
+  deploy-terraform:
+    name: 'Vérification et Déploiement Infrastructure'
+    runs-on: self-hosted
+    defaults:
+      run:
+        working-directory: terraform
 
     steps:
-    # 1. GitHub récupère ton code source
     - name: Checkout du code
       uses: actions/checkout@v4
 
-    # 2. Installation de Terraform sur le serveur GitHub
     - name: Installation de Terraform
       uses: hashicorp/setup-terraform@v3
 
-    # 3. Initialisation (sans se connecter à un Cloud distant)
     - name: Terraform Init
-      run: terraform init -backend=false
+      run: terraform init
 
-    # 4. Vérification du formatage du code
     - name: Terraform Format
       run: terraform fmt -check
 
-    # 5. ÉTAPE CRUCIALE : Validation de la logique de ton code
     - name: Terraform Validate
       run: terraform validate
+
+    - name: Terraform Plan
+      run: terraform plan
+      env:
+        TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+        TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+        TF_VAR_dynatrace_token: ${{ secrets.DYNATRACE_TOKEN }}
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: terraform apply -auto-approve
+      env:
+        TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+        TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+        TF_VAR_dynatrace_token: ${{ secrets.DYNATRACE_TOKEN }}
