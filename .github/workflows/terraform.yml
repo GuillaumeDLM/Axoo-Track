@@ -40,21 +40,42 @@ jobs:
     needs: validate
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: self-hosted
-    defaults:
-      run:
-        working-directory: terraform
 
     steps:
     - name: Checkout du code
       uses: actions/checkout@v4
 
+    # --- COUCHE 1 : Provisionnement du cluster (equivalent EKS/GKE) ---
+    - name: Démarrage du cluster Minikube
+      run: |
+        if minikube status --format='{{.Host}}' 2>/dev/null | grep -q 'Running'; then
+          echo "Minikube is already running"
+        else
+          minikube start --driver=docker --cpus=2 --memory=4096 --disk-size=20g
+        fi
+
+    - name: Activation des addons
+      run: |
+        minikube addons enable ingress
+        minikube addons enable metrics-server
+
+    # --- COUCHE 2 : Build des images dans le Docker de Minikube ---
+    - name: Build des images Docker
+      run: |
+        eval $(minikube docker-env)
+        docker build -t axoo-track-api:latest apps/axoo-track-api/
+        docker build -t axoo-track-web:latest apps/axoo-track-web/
+
+    # --- COUCHES 3-9 : Terraform deploie tout dans le cluster ---
     - name: Installation de Terraform
       uses: hashicorp/setup-terraform@v3
 
     - name: Terraform Init
+      working-directory: terraform
       run: terraform init
 
     - name: Terraform Plan
+      working-directory: terraform
       run: terraform plan
       env:
         TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
@@ -62,12 +83,14 @@ jobs:
         TF_VAR_dynatrace_token: ${{ secrets.DYNATRACE_TOKEN }}
 
     - name: Terraform Apply
+      working-directory: terraform
       run: terraform apply -auto-approve
       env:
         TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
         TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
         TF_VAR_dynatrace_token: ${{ secrets.DYNATRACE_TOKEN }}
 
+    # --- Verification ---
     - name: Vérification du déploiement
       run: |
         kubectl get all -n axoo-track

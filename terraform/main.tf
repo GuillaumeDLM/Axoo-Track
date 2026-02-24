@@ -4,39 +4,11 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 2.35"
     }
-    null = {
-      source  = "hashicorp/null"
-      version = "~> 3.2"
-    }
   }
 }
 
 # ================================================================
-# COUCHE 1 : PROVISIONNEMENT DU CLUSTER (equivalent EKS/GKE/AKS)
-# ================================================================
-
-resource "null_resource" "minikube_cluster" {
-  provisioner "local-exec" {
-    command = <<-EOT
-      if minikube status --format='{{.Host}}' 2>/dev/null | grep -q 'Running'; then
-        echo "Minikube is already running"
-      else
-        minikube start --driver=docker --cpus=2 --memory=4096 --disk-size=20g
-      fi
-    EOT
-  }
-
-  provisioner "local-exec" {
-    command = "minikube addons enable ingress"
-  }
-
-  provisioner "local-exec" {
-    command = "minikube addons enable metrics-server"
-  }
-}
-
-# ================================================================
-# COUCHE 2 : CONFIGURATION DU PROVIDER KUBERNETES
+# PROVIDER KUBERNETES (le cluster doit etre demarre AVANT terraform)
 # ================================================================
 
 provider "kubernetes" {
@@ -58,11 +30,10 @@ resource "kubernetes_namespace" "axoo_track" {
     }
   }
 
-  depends_on = [null_resource.minikube_cluster]
 }
 
 # ================================================================
-# COUCHE 4 : SECRETS ET CONFIGURATION
+# COUCHE 3 : SECRETS ET CONFIGURATION
 # ================================================================
 
 resource "kubernetes_config_map" "axoo_track_config" {
@@ -109,28 +80,7 @@ resource "kubernetes_secret" "axoo_track_dynatrace" {
 }
 
 # ================================================================
-# COUCHE 5 : BUILD DES IMAGES DOCKER (dans le Docker de Minikube)
-# ================================================================
-
-resource "null_resource" "build_images" {
-  triggers = {
-    api_dockerfile = filemd5("${path.module}/../apps/axoo-track-api/Dockerfile")
-    web_dockerfile = filemd5("${path.module}/../apps/axoo-track-web/Dockerfile")
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      eval $(minikube docker-env)
-      docker build -t axoo-track-api:latest ${path.module}/../apps/axoo-track-api/
-      docker build -t axoo-track-web:latest ${path.module}/../apps/axoo-track-web/
-    EOT
-  }
-
-  depends_on = [null_resource.minikube_cluster]
-}
-
-# ================================================================
-# COUCHE 6 : BASE DE DONNEES (axoo-track-db)
+# COUCHE 4 : BASE DE DONNEES (axoo-track-db)
 # ================================================================
 
 resource "kubernetes_persistent_volume_claim" "axoo_track_db" {
@@ -417,10 +367,7 @@ resource "kubernetes_deployment" "axoo_track_api" {
     }
   }
 
-  depends_on = [
-    kubernetes_stateful_set.axoo_track_db,
-    null_resource.build_images
-  ]
+  depends_on = [kubernetes_stateful_set.axoo_track_db]
 }
 
 # ================================================================
@@ -493,7 +440,6 @@ resource "kubernetes_deployment" "axoo_track_web" {
     }
   }
 
-  depends_on = [null_resource.build_images]
 }
 
 # ================================================================
@@ -543,11 +489,10 @@ resource "kubernetes_ingress_v1" "axoo_track_proxy" {
     }
   }
 
-  depends_on = [null_resource.minikube_cluster]
 }
 
 # ================================================================
-# COUCHE 10 : OBSERVABILITE (axoo-track-dynatrace)
+# COUCHE 9 : OBSERVABILITE (axoo-track-dynatrace)
 # ================================================================
 
 resource "kubernetes_daemon_set_v1" "axoo_track_dynatrace" {
