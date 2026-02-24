@@ -306,8 +306,8 @@ resource "kubernetes_deployment" "axoo_track_api" {
 
       spec {
         init_container {
-          name  = "wait-for-db"
-          image = "busybox:1.36"
+          name    = "wait-for-db"
+          image   = "busybox:1.36"
           command = ["sh", "-c", "until nc -z axoo-track-db 5432; do echo 'Waiting for axoo-track-db...'; sleep 2; done"]
         }
 

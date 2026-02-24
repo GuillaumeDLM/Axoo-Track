@@ -49,7 +49,7 @@ variable "jwt_secret" {
 variable "dynatrace_tenant_url" {
   description = "URL du tenant Dynatrace"
   type        = string
-  default     = "https://wkf10640.live.dynatrace.com"
+  default     = "https://srb94465.live.dynatrace.com"
 }
 
 variable "dynatrace_token" {
