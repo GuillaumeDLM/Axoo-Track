@@ -66,6 +66,12 @@ jobs:
         docker build -t axoo-track-api:latest apps/axoo-track-api/
         docker build -t axoo-track-web:latest apps/axoo-track-web/
 
+    # --- Nettoyage du namespace et du state Terraform ---
+    - name: Reset de l'environnement
+      run: |
+        kubectl delete namespace axoo-track --ignore-not-found=true
+        rm -f terraform/terraform.tfstate terraform/terraform.tfstate.backup
+
     # --- COUCHES 3-9 : Terraform deploie tout dans le cluster ---
     - name: Installation de Terraform
       uses: hashicorp/setup-terraform@v3
