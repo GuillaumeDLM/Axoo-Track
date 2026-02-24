@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: axoo-track-dynatrace-secrets
+type: Opaque
+data:
+  # echo -n "https://wkf10640.live.dynatrace.com" | base64
+  TENANT_URL: aHR0cHM6Ly93a2YxMDY0MC5saXZlLmR5bmF0cmFjZS5jb20=
+  # echo -n "CHANGE_ME_dynatrace_token" | base64
+  API_TOKEN: Q0hBTkdFX01FX2R5bmF0cmFjZV90b2tlbg==
+
+---
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: axoo-track-dynatrace
+  labels:
+    app: axoo-track-dynatrace
+spec:
+  selector:
+    matchLabels:
+      app: axoo-track-dynatrace
+  template:
+    metadata:
+      labels:
+        app: axoo-track-dynatrace
+    spec:
+      containers:
+        - name: oneagent
+          image: dynatrace/oneagent:latest
+          securityContext:
+            privileged: true
+          env:
+            - name: ONEAGENT_INSTALLER_TENANT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: axoo-track-dynatrace-secrets
+                  key: TENANT_URL
+            - name: ONEAGENT_INSTALLER_SCRIPT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: axoo-track-dynatrace-secrets
+                  key: API_TOKEN
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+              readOnly: true
+            - name: host-root
+              mountPath: /mnt/root
+              readOnly: true
+      hostPID: true
+      hostNetwork: true
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+        - name: host-root
+          hostPath:
+            path: /

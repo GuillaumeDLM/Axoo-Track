@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: axoo-track-config
+data:
+  DB_NAME: "axootrack"
+  DB_USER: "axoo"
+  DB_HOST: "axoo-track-db"
+  DB_PORT: "5432"
+  APP_PORT: "3000"
+
+---
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: axoo-track-secrets
+type: Opaque
+data:
+  # echo -n "CHANGE_ME_db_password" | base64
+  DB_PASSWORD: Q0hBTkdFX01FX2RiX3Bhc3N3b3Jk
+  # echo -n "CHANGE_ME_jwt_secret" | base64
+  JWT_SECRET: Q0hBTkdFX01FX2p3dF9zZWNyZXQ=

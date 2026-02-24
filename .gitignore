@@ -1,8 +1,10 @@
 node_modules
 dist
 .env
+.DS_Store
 
-/src/generated/prisma
+# Prisma generated
+**/src/generated/prisma
 
 # Terraform
 terraform/.terraform/

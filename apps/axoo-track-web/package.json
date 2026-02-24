@@ -1,0 +1,9 @@
+{
+  "name": "axoo-track-web",
+  "version": "1.0.0",
+  "description": "Frontend for Axoo-Track parcel tracking",
+  "private": true,
+  "scripts": {
+    "start": "echo 'Placeholder - frontend not yet implemented'"
+  }
+}

@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: axoo-track-proxy
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: axoo-track-api
+                port:
+                  number: 3000
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: axoo-track-web
+                port:
+                  number: 80

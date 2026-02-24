@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: axoo-track-web
+  labels:
+    app: axoo-track-web
+spec:
+  type: ClusterIP
+  selector:
+    app: axoo-track-web
+  ports:
+    - port: 80
+      targetPort: 80
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: axoo-track-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: axoo-track-web
+  template:
+    metadata:
+      labels:
+        app: axoo-track-web
+    spec:
+      containers:
+        - name: web
+          image: axoo-track-web:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
