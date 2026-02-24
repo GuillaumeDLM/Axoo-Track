@@ -1,7 +1,25 @@
+variable "environment" {
+  description = "Nom de l'environnement (dev, staging, production)"
+  type        = string
+  default     = "dev"
+}
+
+variable "namespace" {
+  description = "Namespace Kubernetes pour le projet"
+  type        = string
+  default     = "axoo-track"
+}
+
 variable "app_port" {
   description = "Port interne de l'API Axoo-Track"
   type        = number
   default     = 3000
+}
+
+variable "api_replicas" {
+  description = "Nombre de replicas pour l'API"
+  type        = number
+  default     = 2
 }
 
 variable "db_user" {

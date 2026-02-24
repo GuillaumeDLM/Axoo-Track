@@ -1,9 +1,24 @@
-output "api_url" {
-  description = "URL publique de l'API (via NGINX)"
-  value       = "http://localhost"
+output "cluster_status" {
+  description = "Commande pour vérifier le statut du cluster"
+  value       = "minikube status"
 }
 
-output "network_name" {
-  description = "Nom du réseau Docker interne"
-  value       = docker_network.axoo_track_network.name
+output "namespace" {
+  description = "Namespace Kubernetes du projet"
+  value       = kubernetes_namespace.axoo_track.metadata[0].name
+}
+
+output "api_service" {
+  description = "Nom du service API dans le cluster"
+  value       = kubernetes_service.axoo_track_api.metadata[0].name
+}
+
+output "access_url" {
+  description = "Commande pour obtenir l'URL d'accès via Minikube"
+  value       = "minikube service axoo-track-proxy -n ${var.namespace} --url"
+}
+
+output "dashboard" {
+  description = "Commande pour ouvrir le dashboard Kubernetes"
+  value       = "minikube dashboard"
 }

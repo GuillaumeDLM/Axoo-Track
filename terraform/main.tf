@@ -1,139 +1,637 @@
 terraform {
   required_providers {
-    docker = {
-      source  = "kreuzwerker/docker"
-      version = "~> 3.0"
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.35"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
     }
   }
 }
 
-provider "docker" {}
+# ================================================================
+# COUCHE 1 : PROVISIONNEMENT DU CLUSTER (equivalent EKS/GKE/AKS)
+# ================================================================
 
-# ========== Réseau ==========
+resource "null_resource" "minikube_cluster" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      if minikube status --format='{{.Host}}' 2>/dev/null | grep -q 'Running'; then
+        echo "Minikube is already running"
+      else
+        minikube start --driver=docker --cpus=2 --memory=4096 --disk-size=20g
+      fi
+    EOT
+  }
 
-resource "docker_network" "axoo_track_network" {
-  name = "axoo-track-network"
+  provisioner "local-exec" {
+    command = "minikube addons enable ingress"
+  }
+
+  provisioner "local-exec" {
+    command = "minikube addons enable metrics-server"
+  }
 }
 
-# ========== axoo-track-db (PostgreSQL) ==========
+# ================================================================
+# COUCHE 2 : CONFIGURATION DU PROVIDER KUBERNETES
+# ================================================================
 
-resource "docker_image" "postgres" {
-  name         = "postgres:16-alpine"
-  keep_locally = true
+provider "kubernetes" {
+  config_path    = "~/.kube/config"
+  config_context = "minikube"
 }
 
-resource "docker_volume" "axoo_track_db_data" {
-  name = "axoo-track-db-data"
+# ================================================================
+# COUCHE 3 : NAMESPACES (separation des environnements)
+# ================================================================
+
+resource "kubernetes_namespace" "axoo_track" {
+  metadata {
+    name = var.namespace
+    labels = {
+      project     = "axoo-track"
+      environment = var.environment
+      managed-by  = "terraform"
+    }
+  }
+
+  depends_on = [null_resource.minikube_cluster]
 }
 
-resource "docker_container" "axoo_track_db" {
-  name  = "axoo-track-db"
-  image = docker_image.postgres.image_id
+# ================================================================
+# COUCHE 4 : SECRETS ET CONFIGURATION
+# ================================================================
 
-  env = [
-    "POSTGRES_USER=${var.db_user}",
-    "POSTGRES_PASSWORD=${var.db_password}",
-    "POSTGRES_DB=${var.db_name}",
+resource "kubernetes_config_map" "axoo_track_config" {
+  metadata {
+    name      = "axoo-track-config"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+  }
+
+  data = {
+    DB_NAME  = var.db_name
+    DB_USER  = var.db_user
+    DB_HOST  = "axoo-track-db"
+    DB_PORT  = "5432"
+    APP_PORT = tostring(var.app_port)
+  }
+}
+
+resource "kubernetes_secret" "axoo_track_secrets" {
+  metadata {
+    name      = "axoo-track-secrets"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+  }
+
+  data = {
+    DB_PASSWORD = var.db_password
+    JWT_SECRET  = var.jwt_secret
+  }
+
+  type = "Opaque"
+}
+
+resource "kubernetes_secret" "axoo_track_dynatrace" {
+  metadata {
+    name      = "axoo-track-dynatrace-secrets"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+  }
+
+  data = {
+    TENANT_URL = var.dynatrace_tenant_url
+    API_TOKEN  = var.dynatrace_token
+  }
+
+  type = "Opaque"
+}
+
+# ================================================================
+# COUCHE 5 : BUILD DES IMAGES DOCKER (dans le Docker de Minikube)
+# ================================================================
+
+resource "null_resource" "build_images" {
+  triggers = {
+    api_dockerfile = filemd5("${path.module}/../apps/axoo-track-api/Dockerfile")
+    web_dockerfile = filemd5("${path.module}/../apps/axoo-track-web/Dockerfile")
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      eval $(minikube docker-env)
+      docker build -t axoo-track-api:latest ${path.module}/../apps/axoo-track-api/
+      docker build -t axoo-track-web:latest ${path.module}/../apps/axoo-track-web/
+    EOT
+  }
+
+  depends_on = [null_resource.minikube_cluster]
+}
+
+# ================================================================
+# COUCHE 6 : BASE DE DONNEES (axoo-track-db)
+# ================================================================
+
+resource "kubernetes_persistent_volume_claim" "axoo_track_db" {
+  metadata {
+    name      = "axoo-track-db-pvc"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+  }
+
+  spec {
+    access_modes = ["ReadWriteOnce"]
+    resources {
+      requests = {
+        storage = "1Gi"
+      }
+    }
+  }
+}
+
+resource "kubernetes_service" "axoo_track_db" {
+  metadata {
+    name      = "axoo-track-db"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+    labels = {
+      app = "axoo-track-db"
+    }
+  }
+
+  spec {
+    cluster_ip = "None"
+    selector = {
+      app = "axoo-track-db"
+    }
+    port {
+      port        = 5432
+      target_port = 5432
+    }
+  }
+}
+
+resource "kubernetes_stateful_set" "axoo_track_db" {
+  metadata {
+    name      = "axoo-track-db"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+  }
+
+  spec {
+    service_name = "axoo-track-db"
+    replicas     = 1
+
+    selector {
+      match_labels = {
+        app = "axoo-track-db"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "axoo-track-db"
+        }
+      }
+
+      spec {
+        container {
+          name  = "postgres"
+          image = "postgres:16-alpine"
+
+          port {
+            container_port = 5432
+          }
+
+          env {
+            name = "POSTGRES_DB"
+            value_from {
+              config_map_key_ref {
+                name = kubernetes_config_map.axoo_track_config.metadata[0].name
+                key  = "DB_NAME"
+              }
+            }
+          }
+
+          env {
+            name = "POSTGRES_USER"
+            value_from {
+              config_map_key_ref {
+                name = kubernetes_config_map.axoo_track_config.metadata[0].name
+                key  = "DB_USER"
+              }
+            }
+          }
+
+          env {
+            name = "POSTGRES_PASSWORD"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.axoo_track_secrets.metadata[0].name
+                key  = "DB_PASSWORD"
+              }
+            }
+          }
+
+          volume_mount {
+            name       = "pg-data"
+            mount_path = "/var/lib/postgresql/data"
+          }
+
+          readiness_probe {
+            exec {
+              command = ["pg_isready", "-U", var.db_user]
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 10
+          }
+        }
+
+        volume {
+          name = "pg-data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.axoo_track_db.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+}
+
+# ================================================================
+# COUCHE 7 : API (axoo-track-api)
+# ================================================================
+
+resource "kubernetes_service" "axoo_track_api" {
+  metadata {
+    name      = "axoo-track-api"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+    labels = {
+      app = "axoo-track-api"
+    }
+  }
+
+  spec {
+    type = "ClusterIP"
+    selector = {
+      app = "axoo-track-api"
+    }
+    port {
+      port        = 3000
+      target_port = 3000
+    }
+  }
+}
+
+resource "kubernetes_deployment" "axoo_track_api" {
+  metadata {
+    name      = "axoo-track-api"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+  }
+
+  spec {
+    replicas = var.api_replicas
+
+    selector {
+      match_labels = {
+        app = "axoo-track-api"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "axoo-track-api"
+        }
+      }
+
+      spec {
+        init_container {
+          name  = "wait-for-db"
+          image = "busybox:1.36"
+          command = ["sh", "-c", "until nc -z axoo-track-db 5432; do echo 'Waiting for axoo-track-db...'; sleep 2; done"]
+        }
+
+        container {
+          name              = "api"
+          image             = "axoo-track-api:latest"
+          image_pull_policy = "Never"
+
+          port {
+            container_port = 3000
+          }
+
+          env {
+            name = "PORT"
+            value_from {
+              config_map_key_ref {
+                name = kubernetes_config_map.axoo_track_config.metadata[0].name
+                key  = "APP_PORT"
+              }
+            }
+          }
+
+          env {
+            name = "DB_USER"
+            value_from {
+              config_map_key_ref {
+                name = kubernetes_config_map.axoo_track_config.metadata[0].name
+                key  = "DB_USER"
+              }
+            }
+          }
+
+          env {
+            name = "DB_PASSWORD"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.axoo_track_secrets.metadata[0].name
+                key  = "DB_PASSWORD"
+              }
+            }
+          }
+
+          env {
+            name = "DB_HOST"
+            value_from {
+              config_map_key_ref {
+                name = kubernetes_config_map.axoo_track_config.metadata[0].name
+                key  = "DB_HOST"
+              }
+            }
+          }
+
+          env {
+            name = "DB_PORT"
+            value_from {
+              config_map_key_ref {
+                name = kubernetes_config_map.axoo_track_config.metadata[0].name
+                key  = "DB_PORT"
+              }
+            }
+          }
+
+          env {
+            name = "DB_NAME"
+            value_from {
+              config_map_key_ref {
+                name = kubernetes_config_map.axoo_track_config.metadata[0].name
+                key  = "DB_NAME"
+              }
+            }
+          }
+
+          env {
+            name  = "DATABASE_URL"
+            value = "postgresql://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)?schema=public"
+          }
+
+          env {
+            name = "JWT_SECRET"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.axoo_track_secrets.metadata[0].name
+                key  = "JWT_SECRET"
+              }
+            }
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = 3000
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 5
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = 3000
+            }
+            initial_delay_seconds = 15
+            period_seconds        = 10
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    kubernetes_stateful_set.axoo_track_db,
+    null_resource.build_images
   ]
-
-  networks_advanced {
-    name = docker_network.axoo_track_network.name
-  }
-
-  volumes {
-    volume_name    = docker_volume.axoo_track_db_data.name
-    container_path = "/var/lib/postgresql/data"
-  }
-
-  restart = "unless-stopped"
 }
 
-# ========== axoo-track-api ==========
+# ================================================================
+# COUCHE 8 : FRONTEND (axoo-track-web)
+# ================================================================
 
-resource "docker_image" "axoo_track_api" {
-  name = "axoo-track-api:latest"
+resource "kubernetes_service" "axoo_track_web" {
+  metadata {
+    name      = "axoo-track-web"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+    labels = {
+      app = "axoo-track-web"
+    }
+  }
 
-  build {
-    context    = "${path.module}/../apps/axoo-track-api"
-    dockerfile = "Dockerfile"
-    tag        = ["axoo-track-api:latest"]
+  spec {
+    type = "ClusterIP"
+    selector = {
+      app = "axoo-track-web"
+    }
+    port {
+      port        = 80
+      target_port = 80
+    }
   }
 }
 
-resource "docker_container" "axoo_track_api" {
-  name  = "axoo-track-api"
-  image = docker_image.axoo_track_api.image_id
-
-  env = [
-    "PORT=${var.app_port}",
-    "DATABASE_URL=postgresql://${var.db_user}:${var.db_password}@axoo-track-db:5432/${var.db_name}?schema=public",
-    "JWT_SECRET=${var.jwt_secret}",
-  ]
-
-  networks_advanced {
-    name = docker_network.axoo_track_network.name
+resource "kubernetes_deployment" "axoo_track_web" {
+  metadata {
+    name      = "axoo-track-web"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
   }
 
-  restart    = "unless-stopped"
-  depends_on = [docker_container.axoo_track_db]
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app = "axoo-track-web"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "axoo-track-web"
+        }
+      }
+
+      spec {
+        container {
+          name              = "web"
+          image             = "axoo-track-web:latest"
+          image_pull_policy = "Never"
+
+          port {
+            container_port = 80
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/"
+              port = 80
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 10
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [null_resource.build_images]
 }
 
-# ========== axoo-track-proxy (NGINX) ==========
+# ================================================================
+# COUCHE 9 : INGRESS (axoo-track-proxy)
+# ================================================================
 
-resource "docker_image" "nginx" {
-  name         = "nginx:alpine"
-  keep_locally = true
+resource "kubernetes_ingress_v1" "axoo_track_proxy" {
+  metadata {
+    name      = "axoo-track-proxy"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+    annotations = {
+      "nginx.ingress.kubernetes.io/rewrite-target" = "/$1"
+    }
+  }
+
+  spec {
+    ingress_class_name = "nginx"
+
+    rule {
+      http {
+        path {
+          path      = "/api(/|$)(.*)"
+          path_type = "ImplementationSpecific"
+          backend {
+            service {
+              name = kubernetes_service.axoo_track_api.metadata[0].name
+              port {
+                number = 3000
+              }
+            }
+          }
+        }
+
+        path {
+          path      = "/(.*)"
+          path_type = "ImplementationSpecific"
+          backend {
+            service {
+              name = kubernetes_service.axoo_track_web.metadata[0].name
+              port {
+                number = 80
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [null_resource.minikube_cluster]
 }
 
-resource "docker_container" "axoo_track_proxy" {
-  name  = "axoo-track-proxy"
-  image = docker_image.nginx.image_id
+# ================================================================
+# COUCHE 10 : OBSERVABILITE (axoo-track-dynatrace)
+# ================================================================
 
-  ports {
-    internal = 80
-    external = 80
+resource "kubernetes_daemon_set_v1" "axoo_track_dynatrace" {
+  metadata {
+    name      = "axoo-track-dynatrace"
+    namespace = kubernetes_namespace.axoo_track.metadata[0].name
+    labels = {
+      app = "axoo-track-dynatrace"
+    }
   }
 
-  networks_advanced {
-    name = docker_network.axoo_track_network.name
+  spec {
+    selector {
+      match_labels = {
+        app = "axoo-track-dynatrace"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "axoo-track-dynatrace"
+        }
+      }
+
+      spec {
+        host_pid     = true
+        host_network = true
+
+        container {
+          name  = "oneagent"
+          image = "dynatrace/oneagent:latest"
+
+          security_context {
+            privileged = true
+          }
+
+          env {
+            name = "ONEAGENT_INSTALLER_TENANT_URL"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.axoo_track_dynatrace.metadata[0].name
+                key  = "TENANT_URL"
+              }
+            }
+          }
+
+          env {
+            name = "ONEAGENT_INSTALLER_SCRIPT_TOKEN"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.axoo_track_dynatrace.metadata[0].name
+                key  = "API_TOKEN"
+              }
+            }
+          }
+
+          volume_mount {
+            name       = "docker-sock"
+            mount_path = "/var/run/docker.sock"
+            read_only  = true
+          }
+
+          volume_mount {
+            name       = "host-root"
+            mount_path = "/mnt/root"
+            read_only  = true
+          }
+        }
+
+        volume {
+          name = "docker-sock"
+          host_path {
+            path = "/var/run/docker.sock"
+          }
+        }
+
+        volume {
+          name = "host-root"
+          host_path {
+            path = "/"
+          }
+        }
+      }
+    }
   }
-
-  upload {
-    file    = "/etc/nginx/nginx.conf"
-    content = file("${path.module}/nginx.conf")
-  }
-
-  restart    = "unless-stopped"
-  depends_on = [docker_container.axoo_track_api]
-}
-
-# ========== axoo-track-dynatrace ==========
-
-resource "docker_image" "dynatrace" {
-  name         = "dynatrace/oneagent:latest"
-  keep_locally = true
-}
-
-resource "docker_container" "axoo_track_dynatrace" {
-  name       = "axoo-track-dynatrace"
-  image      = docker_image.dynatrace.image_id
-  privileged = true
-
-  env = [
-    "ONEAGENT_INSTALLER_TENANT_URL=${var.dynatrace_tenant_url}",
-    "ONEAGENT_INSTALLER_SCRIPT_TOKEN=${var.dynatrace_token}",
-  ]
-
-  volumes {
-    host_path      = "/var/run/docker.sock"
-    container_path = "/var/run/docker.sock"
-    read_only      = true
-  }
-
-  networks_advanced {
-    name = docker_network.axoo_track_network.name
-  }
-
-  restart    = "unless-stopped"
-  depends_on = [docker_container.axoo_track_api]
 }
