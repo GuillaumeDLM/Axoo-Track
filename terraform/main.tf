@@ -559,17 +559,7 @@ resource "kubernetes_daemon_set_v1" "axoo_track_dynatrace" {
           volume_mount {
             name       = "host-root"
             mount_path = "/mnt/root"
-            read_only  = true
-          }
-
-          volume_mount {
-            name       = "oneagent-install"
-            mount_path = "/mnt/host_root/opt/dynatrace"
-          }
-
-          volume_mount {
-            name       = "oneagent-var"
-            mount_path = "/mnt/host_root/var/lib/dynatrace"
+            read_only  = false
           }
         }
 
@@ -585,16 +575,6 @@ resource "kubernetes_daemon_set_v1" "axoo_track_dynatrace" {
           host_path {
             path = "/"
           }
-        }
-
-        volume {
-          name = "oneagent-install"
-          empty_dir {}
-        }
-
-        volume {
-          name = "oneagent-var"
-          empty_dir {}
         }
       }
     }
